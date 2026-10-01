@@ -1,4 +1,4 @@
-#define CLASS_NAME "OpenGLRendererBackend"
+#define CLASS_NAME "EGLRendererBackend"
 #include "../../../log_macros.hpp"
 
 #include "../../../color.hpp"
@@ -7,20 +7,20 @@
 #include "../../../material.hpp"
 #include "../../../math.hpp"
 #include "../../../stb_image.h"
+#include "egl_renderer_backend.hpp"
 #include "mesh_buffer_factory.hpp"
-#include "open_gl_renderer_backend.hpp"
 #include "shader_compiler_factory.hpp"
 #include "shader_program_factory.hpp"
-#include <GL/glew.h>
-#include <SDL2/SDL.h>
+#include <SDL.h>
 #include <fstream>
+#include <glad/glad.h>
 #include <sstream>
 
-GraphicsAPI OpenGLRendererBackend::getGraphicsAPI() const { return GraphicsAPI::OPENGL; }
+GraphicsAPI EGLRendererBackend::getGraphicsAPI() const { return GraphicsAPI::EGL; }
 
-std::string OpenGLRendererBackend::getShaderExtension() const { return ".glsl"; }
+std::string EGLRendererBackend::getShaderExtension() const { return ".nxs"; }
 
-OpenGLRendererBackend::~OpenGLRendererBackend() {
+EGLRendererBackend::~EGLRendererBackend() {
     if (instanceSSBO)
         glDeleteBuffers(1, &instanceSSBO);
     if (matricesUBO)
@@ -41,58 +41,59 @@ OpenGLRendererBackend::~OpenGLRendererBackend() {
         glDeleteBuffers(1, &textUBOColor);
 }
 
-unsigned int OpenGLRendererBackend::getRequiredWindowFlags() const { return SDL_WINDOW_OPENGL; };
+unsigned int EGLRendererBackend::getRequiredWindowFlags() const { return SDL_WINDOW_OPENGL; };
 
-std::unique_ptr<ShaderProgram> OpenGLRendererBackend::createShaderProgram() {
+std::unique_ptr<ShaderProgram> EGLRendererBackend::createShaderProgram() {
     return ShaderProgramFactory::create(getGraphicsAPI());
 }
 
-std::unique_ptr<MeshBuffer> OpenGLRendererBackend::createMeshBuffer() {
+std::unique_ptr<MeshBuffer> EGLRendererBackend::createMeshBuffer() {
     return MeshBufferFactory::create(getGraphicsAPI());
 }
 
-std::unique_ptr<ShaderCompiler> OpenGLRendererBackend::createShaderCompiler() {
+std::unique_ptr<ShaderCompiler> EGLRendererBackend::createShaderCompiler() {
     return ShaderCompilerFactory::create(getGraphicsAPI());
 }
 
-bool OpenGLRendererBackend::init(SDL_Window* window) {
+bool EGLRendererBackend::init(SDL_Window* window) {
     if (!window) {
-        LOG_ERROR("Window is null!");
+        LOG_INFO("Window is null!");
         return false;
     }
 
-    // By default, SDL enables VSync (swap interval = 1),
-    // which caps the FPS to the monitor's refresh rate (60Hz).
     SDL_GLContext glContext = SDL_GL_CreateContext(window);
     if (!glContext) {
-        LOG_ERROR("Failed to create OpenGL context!");
+        LOG_INFO("Failed to create OpenGL context for SDL Window: %s\n", SDL_GetError());
+        SDL_DestroyWindow(window);
+        return false;
+    }
+
+    // Load OpenGL routines using glad. SDL exposes the
+    // EGL loader through SDL_GL_GetProcAddress.
+    if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress)) {
+        LOG_INFO("Failed to load OpenGL routines using glad: %s\n", SDL_GetError());
+        SDL_GL_DeleteContext(glContext);
+        SDL_DestroyWindow(window);
         return false;
     }
 
     // Vsync from project.conf: 1 = cap to refresh rate, 0 = uncapped.
-    SDL_GL_SetSwapInterval(vsyncEnabled ? 1 : 0);
+    if (SDL_GL_SetSwapInterval(vsyncEnabled ? 1 : 0) != 0) {
+        LOG_INFO("Failed to set Swap Interval for SDL Window: %s\n", SDL_GetError());
+    }
 
     return init();
 };
 
-bool OpenGLRendererBackend::init() {
-    GLenum err = glewInit();
-    printf("OpenGL: %s | GPU: %s\n", glGetString(GL_VERSION), glGetString(GL_RENDERER));
-
-    if (GLEW_OK != err) {
-        std::string glewErr = reinterpret_cast<const char*>(glewGetErrorString(err));
-        LOG_ERROR("GLEW initialization failed: " + glewErr);
-        return false;
-    }
-
+bool EGLRendererBackend::init() {
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     // sRGB output from project.conf. When enabled, the default framebuffer
     // applies a linear->sRGB conversion on write; when disabled (default),
-    // colors are written as-is (historical behavior). Requires an sRGB-capable
-    // default framebuffer, which SDL provides by default.
+    // colors are written as-is (historical behavior). Requires an
+    // sRGB-capable default framebuffer, which SDL provides by default.
     if (srgbEnabled)
         glEnable(GL_FRAMEBUFFER_SRGB);
     else
@@ -129,46 +130,68 @@ bool OpenGLRendererBackend::init() {
     return true;
 }
 
-void OpenGLRendererBackend::onCameraSet() {}
+void EGLRendererBackend::onCameraSet() {}
 
-void OpenGLRendererBackend::clear(Camera* camera) {
+void EGLRendererBackend::clear(Camera* camera) {
     ColorRGBA bgColor = camera ? camera->getBackgroundColor() : COLOR::BLACK;
 
+    // TODO: glClearColor(0x68 / 255.0f, 0xB0 / 255.0f, 0xD8 / 255.0f, 1.0f);
+    //  Por que hexa, e por que dividir por 255
+    //  Cores costumam ser especificadas no formato de 8 bits por canal (0–255),
+    //  que é como você vê em CSS, editores de imagem, color pickers etc. O hexa
+    //  é só a forma compacta de escrever esses valores 0–255:
+    //  0x68 = 104
+    //  0xB0 = 176
+    //  0xD8 = 216
+    //  Como o OpenGL quer 0.0–1.0 e não 0–255, divide-se cada um por 255:
+    //  R: 0x68 / 255.0f = 104 / 255 ≈ 0.408
+    //  G: 0xB0 / 255.0f = 176 / 255 ≈ 0.690
+    //  B: 0xD8 / 255.0f = 216 / 255 ≈ 0.847
+    //  A: 1.0f = opaco (alfa já vem direto em 0.0–1.0, por isso não é dividido)
+    //  O resultado é um azul claro acinzentado. Em notação web, essa cor é #68B0D8.
     glClearColor(bgColor.r, bgColor.g, bgColor.b, bgColor.a);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
-bool OpenGLRendererBackend::initWindowContext() {
+bool EGLRendererBackend::initWindowContext() {
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+
+    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     return true;
 }
 
-void OpenGLRendererBackend::draw(const Mesh& mesh) {
+void EGLRendererBackend::draw(const Mesh& mesh) {
     auto vao = static_cast<GLuint>(reinterpret_cast<uintptr_t>(mesh.getMeshBufferHandle()));
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, mesh.getVertices().size() / 3);
     glBindVertexArray(0);
 }
 
-void OpenGLRendererBackend::setUniforms(ShaderProgram* shaderProgram) {
+void EGLRendererBackend::setUniforms(ShaderProgram* shaderProgram) {
     if (!shaderProgram || !shaderProgram->isValid())
         return;
 
     shaderProgram->use();
 }
 
-void OpenGLRendererBackend::bindCamera(Camera* camera) {
+void EGLRendererBackend::bindCamera(Camera* camera) {
     if (!camera) {
-        LOG_ERROR("Camera is null");
+        LOG_INFO("Camera is null!");
         return;
     }
 
     WorldObject* cameraObj = camera->getOwner();
     if (!cameraObj) {
-        LOG_ERROR("Camera has no owner WorldObject");
+        LOG_INFO("Camera has no owner WorldObject!");
         return;
     }
 
@@ -177,17 +200,14 @@ void OpenGLRendererBackend::bindCamera(Camera* camera) {
     const auto camPos = cameraObj->getTransform().getPosition();
     const auto camRot = cameraObj->getTransform().getRotation();
 
-    // Calcular forward vector da rotação (OpenGL usa Z negativo como forward)
-    Vector3 forward;
     float yawRad = Yume::Math::radians(camRot.y);
     float pitchRad = Yume::Math::radians(camRot.x);
 
+    Vector3 forward;
     forward.x = cos(pitchRad) * sin(yawRad);
     forward.y = sin(pitchRad);
     forward.z = cos(pitchRad) * cos(yawRad);
     forward = Yume::Math::normalize(forward);
-
-    // Em OpenGL, forward padrão é -Z, então invertemos
     forward = forward * -1.0f;
 
     Vector3 camPosVec{camPos.x, camPos.y, camPos.z};
@@ -215,8 +235,7 @@ void OpenGLRendererBackend::bindCamera(Camera* camera) {
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
-void OpenGLRendererBackend::setBufferDataImpl(const std::string& name, const void* data,
-                                              size_t size) {
+void EGLRendererBackend::setBufferDataImpl(const std::string& name, const void* data, size_t size) {
     auto it = uniformBindings.find(name);
     if (it != uniformBindings.end()) {
         glBindBuffer(GL_UNIFORM_BUFFER, it->second);
@@ -225,7 +244,7 @@ void OpenGLRendererBackend::setBufferDataImpl(const std::string& name, const voi
     }
 }
 
-void OpenGLRendererBackend::applyMaterial(Material* material) {
+void EGLRendererBackend::applyMaterial(Material* material) {
     auto program = material->getShaderProgram();
     if (!program || !program->isValid()) {
         return;
@@ -234,8 +253,8 @@ void OpenGLRendererBackend::applyMaterial(Material* material) {
     setUniforms(program);
 }
 
-void OpenGLRendererBackend::renderWorldObjects(const std::vector<WorldObject*>& objects,
-                                               const std::vector<Light*>& lights) {
+void EGLRendererBackend::renderWorldObjects(const std::vector<WorldObject*>& objects,
+                                            const std::vector<Light*>& lights) {
 
     // Reset per-frame draw statistics. (frustumCulledObjects is set by
     // Renderer::render before this call, so it is intentionally not reset here.)
@@ -279,9 +298,10 @@ void OpenGLRendererBackend::renderWorldObjects(const std::vector<WorldObject*>& 
 
     static bool printed = false;
     if (!printed) {
-        printf("Groups: %zu\n", instanceGroups.size());
+        LOG_INFO("Groups: %zu\n", instanceGroups.size());
         for (auto& [key, group] : instanceGroups)
-            printf("  VAO %u shader %u: %zu instances\n", key.vao, key.shader, group.models.size());
+            LOG_INFO("  VAO %u shader %u: %zu instances\n", key.vao, key.shader,
+                     group.models.size());
         printed = true;
     }
 
@@ -358,7 +378,7 @@ void OpenGLRendererBackend::renderWorldObjects(const std::vector<WorldObject*>& 
     }
 }
 
-unsigned int OpenGLRendererBackend::createCubemapTexture(const std::vector<std::string>& faces) {
+unsigned int EGLRendererBackend::createCubemapTexture(const std::vector<std::string>& faces) {
     unsigned int textureID;
     glGenTextures(1, &textureID);
     glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
@@ -373,7 +393,7 @@ unsigned int OpenGLRendererBackend::createCubemapTexture(const std::vector<std::
                          GL_UNSIGNED_BYTE, data);
             stbi_image_free(data);
         } else {
-            LOG_WARN("Cubemap texture failed to load at path: " + faces[i].c_str());
+            LOG_INFO("Cubemap texture failed to load at path: " + faces[i].c_str());
             stbi_image_free(data);
             return 0;
         }
@@ -388,12 +408,12 @@ unsigned int OpenGLRendererBackend::createCubemapTexture(const std::vector<std::
     return textureID;
 }
 
-void OpenGLRendererBackend::deleteCubemapTexture(unsigned int textureID) {
+void EGLRendererBackend::deleteCubemapTexture(unsigned int textureID) {
     glDeleteTextures(1, &textureID);
 }
 
-void OpenGLRendererBackend::renderSkybox(const Mesh& mesh, unsigned int shaderProgram,
-                                         unsigned int textureID) {
+void EGLRendererBackend::renderSkybox(const Mesh& mesh, unsigned int shaderProgram,
+                                      unsigned int textureID) {
     if (!mainCamera)
         return;
 
@@ -403,7 +423,7 @@ void OpenGLRendererBackend::renderSkybox(const Mesh& mesh, unsigned int shaderPr
 
     glDepthFunc(GL_LEQUAL);
 
-    const auto camPos = cameraObj->getTransform().getPosition(); // Mudar auto& para const auto
+    const auto camPos = cameraObj->getTransform().getPosition();
     Matrix4 camView =
         Yume::Math::lookAt({camPos.x, camPos.y, camPos.z}, {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f});
 
@@ -428,9 +448,9 @@ void OpenGLRendererBackend::renderSkybox(const Mesh& mesh, unsigned int shaderPr
     glDepthFunc(GL_LESS);
 }
 
-void OpenGLRendererBackend::present(SDL_Window* window) { SDL_GL_SwapWindow(window); }
+void EGLRendererBackend::present(SDL_Window* window) { SDL_GL_SwapWindow(window); }
 
-void OpenGLRendererBackend::initSpriteQuad() {
+void EGLRendererBackend::initSpriteQuad() {
     float vertices[] = {-0.5f, -0.5f, 0.0f, 0.0f, 0.0f, 0.5f,  -0.5f, 0.0f, 1.0f, 0.0f,
                         0.5f,  0.5f,  0.0f, 1.0f, 1.0f, -0.5f, -0.5f, 0.0f, 0.0f, 0.0f,
                         0.5f,  0.5f,  0.0f, 1.0f, 1.0f, -0.5f, 0.5f,  0.0f, 0.0f, 1.0f};
@@ -450,7 +470,7 @@ void OpenGLRendererBackend::initSpriteQuad() {
     glBindVertexArray(0);
 }
 
-unsigned int OpenGLRendererBackend::loadTexture(const std::string& path, uint8_t filterType) {
+unsigned int EGLRendererBackend::loadTexture(const std::string& path, uint8_t filterType) {
     unsigned int textureID;
     glGenTextures(1, &textureID);
 
@@ -474,13 +494,13 @@ unsigned int OpenGLRendererBackend::loadTexture(const std::string& path, uint8_t
 
         stbi_image_free(data);
     } else {
-        LOG_ERROR("Failed to load texture: " + path);
+        LOG_INFO("Failed to load texture: " + path);
     }
 
     return textureID;
 }
 
-void OpenGLRendererBackend::drawSprite(const Sprite& sprite) {
+void EGLRendererBackend::drawSprite(const Sprite& sprite) {
     LOG_INFO("Drawing sprite - TextureID: " + std::to_string(sprite.getTexture()) + " Width: " +
              std::to_string(sprite.getWidth()) + " Height: " + std::to_string(sprite.getHeight()));
 
@@ -517,11 +537,11 @@ void OpenGLRendererBackend::drawSprite(const Sprite& sprite) {
 
     GLenum err = glGetError();
     if (err != GL_NO_ERROR) {
-        LOG_ERROR("OpenGL error in drawSprite: " + std::to_string(err));
+        LOG_INFO("OpenGL error in drawSprite: " + std::to_string(err));
     }
 }
 
-GLuint OpenGLRendererBackend::compileTextShader(const std::string& path, GLenum type) {
+GLuint EGLRendererBackend::compileTextShader(const std::string& path, GLenum type) {
     std::ifstream file(path);
     if (!file.is_open())
         return 0;
@@ -539,15 +559,15 @@ GLuint OpenGLRendererBackend::compileTextShader(const std::string& path, GLenum 
     if (!ok) {
         char log[512];
         glGetShaderInfoLog(shader, 512, nullptr, log);
-        printf("TextRenderer shader error: %s\n", log);
+        LOG_INFO("TextRenderer shader error: %s\n", log);
         glDeleteShader(shader);
         return 0;
     }
     return shader;
 }
 
-bool OpenGLRendererBackend::initText(const FontAtlas& atlas, unsigned int texID,
-                                     const std::string& vertPath, const std::string& fragPath) {
+bool EGLRendererBackend::initText(const FontAtlas& atlas, unsigned int texID,
+                                  const std::string& vertPath, const std::string& fragPath) {
     textAtlas = &atlas;
     textTextureID = texID;
 
@@ -568,7 +588,7 @@ bool OpenGLRendererBackend::initText(const FontAtlas& atlas, unsigned int texID,
     if (!ok) {
         char log[512];
         glGetProgramInfoLog(textShaderProgram, 512, nullptr, log);
-        printf("TextRenderer link error: %s\n", log);
+        LOG_INFO("TextRenderer link error: %s\n", log);
         return false;
     }
 
@@ -616,8 +636,8 @@ bool OpenGLRendererBackend::initText(const FontAtlas& atlas, unsigned int texID,
     return true;
 }
 
-void OpenGLRendererBackend::drawText(const std::string& text, float x, float y, float scale,
-                                     ColorRGBA color, int screenWidth, int screenHeight) {
+void EGLRendererBackend::drawText(const std::string& text, float x, float y, float scale,
+                                  ColorRGBA color, int screenWidth, int screenHeight) {
     if (!textAtlas || !textShaderProgram)
         return;
 

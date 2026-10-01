@@ -1,17 +1,17 @@
-#ifndef OPEN_GL_RENDERER_BACKEND_HPP
-#define OPEN_GL_RENDERER_BACKEND_HPP
+#ifndef EGL_RENDERER_BACKEND_HPP
+#define EGL_RENDERER_BACKEND_HPP
 
 #include "../../../graphics_api.hpp"
 #include "../../../matrix4.hpp"
 #include "../../../mesh.hpp"
 #include "../../../world_object.hpp"
 #include "../../renderer_backend.hpp"
-#include <GL/glew.h>
+#include <glad/glad.h>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-class OpenGLRendererBackend : public RendererBackend {
+class EGLRendererBackend : public RendererBackend {
   private:
     GLuint instanceSSBO = 0;
     GLuint spriteVAO = 0;
@@ -53,7 +53,7 @@ class OpenGLRendererBackend : public RendererBackend {
     void initSpriteQuad();
 
   public:
-    ~OpenGLRendererBackend();
+    ~EGLRendererBackend();
 
     unsigned int loadTexture(const std::string& path, uint8_t filterType = 0) override;
     void drawSprite(const Sprite& sprite) override;
@@ -90,4 +90,4 @@ class OpenGLRendererBackend : public RendererBackend {
                   int screenWidth, int screenHeight) override;
 };
 
-#endif
+#endif // EGL_RENDERER_BACKEND_HPP
